@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
+  NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: app }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+      - run: npm run e2e
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -fsS -H "Title: CI failed: ${{ github.repository }}" -H "Priority: high" -H "Tags: x" \
+            -d "${{ github.event_name }} on ${{ github.ref_name }} - ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${NTFY_SERVER:-https://ntfy.sh}/${NTFY_TOPIC}" || true
+
+  deploy:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+    strategy:
+      matrix:
+        include:
+          - app: api
+            project: VERCEL_API_PROJECT_ID
+          - app: web
+            project: VERCEL_WEB_PROJECT_ID
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm i -g vercel@latest
+      - name: Deploy ${{ matrix.app }}
+        env:
+          VERCEL_PROJECT_ID: ${{ secrets[matrix.project] }}
+        run: |
+          # remote build: the project (root directory, framework, env) is configured on Vercel; a --prebuilt deploy fails on projects without a first deployment
+          URL=$(vercel deploy --prod --yes --token "$VERCEL_TOKEN")
+          echo "url=$URL" >> "$GITHUB_STEP_SUMMARY"
+          curl -fsS -H "Title: Deployed ${{ matrix.app }}: ${{ github.repository }}" -H "Tags: rocket" -d "$URL" \
+            "${NTFY_SERVER:-https://ntfy.sh}/${NTFY_TOPIC}" || true
+      - name: Notify on deploy failure
+        if: failure()
+        run: |
+          curl -fsS -H "Title: Deploy failed (${{ matrix.app }}): ${{ github.repository }}" -H "Priority: high" -H "Tags: x" \
+            -d "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${NTFY_SERVER:-https://ntfy.sh}/${NTFY_TOPIC}" || true
