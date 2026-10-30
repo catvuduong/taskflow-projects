@@ -1,23 +1,29 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
+import { EmptyState, Notice, Skeleton } from '@/components/ui';
+import { useApi } from '@/lib/use-api';
+import type { ProjectSummary } from '@/lib/types';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-
+// The home page opens the first project's board, the screen people see first.
 export default function Home() {
-  const [health, setHealth] = useState<string>('checking...');
+  const router = useRouter();
+  const projects = useApi<ProjectSummary[]>('/projects');
+  const firstId = projects.data?.[0]?.id;
 
   useEffect(() => {
-    fetch(`${API_URL}/health`)
-      .then((r) => r.json())
-      .then((d) => setHealth(`api ${d.status} / db ${d.db}`))
-      .catch(() => setHealth('api unreachable'));
-  }, []);
+    if (firstId !== undefined) router.replace(`/projects/${firstId}/board`);
+  }, [firstId, router]);
 
+  if (projects.error) return <Notice onRetry={projects.reload}>{projects.error}</Notice>;
+  if (projects.data && projects.data.length === 0) {
+    return <EmptyState title="No projects yet">Create one from the sidebar to get started.</EmptyState>;
+  }
   return (
-    <main style={{ padding: 32, fontFamily: 'system-ui' }}>
-      <h1>taskflow-projects</h1>
-      <p data-testid="health">{health}</p>
-    </main>
+    <div aria-label="Opening your board" className="page-loading">
+      <Skeleton className="skeleton-title" />
+      <Skeleton className="skeleton-block" />
+    </div>
   );
 }
